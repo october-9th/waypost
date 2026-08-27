@@ -1,0 +1,20 @@
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Go build and test artefacts
+/bin/*
+!/bin/.gitkeep
+*.test
+*.out
+coverage.out
+
+# OS/editor files
+.DS_Store
+.vscode/
+.idea/
+
+# oh-my-codex local runtime state
+.omx/
