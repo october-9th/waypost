@@ -1,0 +1,14 @@
+{
+  "sessions": {
+    "01a041fe-d36f-7153-8b9b-05bc56bfe6e8": {
+      "ordinary_no_progress_guard": {
+        "fingerprint": "ordinary|mình chốt: **lorehound**. > `lore` — tri thức kỹ thuật tích lũy > `hound` — lần dấu, săn tìm nó khớp với hướng của dự án: không chỉ search bài viết, mà tìm “technical lore” đáng đọc và prior art từ hn, lobsters, github, sau này cả research feed như mô tả trong [plan.md](/users/arthur/desktop/code/arthur/plan.md). tên này lên cli cũng khá tự nhiên: ```bash lorehound \"go scheduler\" lorehound articles \"agent memory\" lorehound repos --lang go ``` header tui: ```text lorehound ▸ go scheduler ``` tagline có thể là: > **hunt down technical knowledge worth your time.** hoặc: > **find the signal. follow the lore.** điểm mạnh: - có cá tính nhưng không cố tình viết sai chính tả. - không bị khóa vào hn/lobsters hay chỉ riêng “article”. - hợp với một tui terminal hơi nerdy, dùng hằng ngày. - kiểm tra nhanh chưa thấy developer cli đáng kể trùng tên; chủ yếu chỉ có một mod game cũ tên lorehound. đây chưa phải kiểm tra trademark toàn diện. ([curseforge](https://www.curseforge.com/tsw/tsw-mods/lorehound/files/2467913)) shortlist dự phòng: 1. **lorehound** — cân bằng nhất. 2. **threadcut** — sắc hơn, mang nghĩa “nhặt best cuts từ các discussion thread”. 3. **trawl** — ngắn, chất cli, nhưng hơi mang cảm giác cào dữ liệu. 4. **waypost** — thanh lịch hơn, nhưng yếu về ý “lọc tín hiệu”. mình sẽ tránh **winnow**, **cairn**, **scry**, **sonde** và **riffle**: nghĩa đều hay nhưng hiện đã có các cli/developer tool dùng tên đó, trong đó cairn và winnow đặc biệt chật chội. ([winnow](https://github.com/jpoindexter/winnow), [cairn](https://github.com/cairn-framework/cairn), [scry](https://joypauls.github.io/scry/), [riffle](https://astro-cli-docs.buildmidas.com/reference)) nếu chọn theo đúng cá tính hiện tại của project: **đổi `albert` thành `lorehound`**.",
+        "first_seen_at": "2026-08-27T06:56:35.695Z",
+        "last_seen_at": "2026-08-27T06:56:35.695Z",
+        "repeat_count": 1,
+        "last_turn_id": "01a041ff-14a6-7873-9750-7a7840e857f4",
+        "last_thread_id": null
+      }
+    }
+  }
+}

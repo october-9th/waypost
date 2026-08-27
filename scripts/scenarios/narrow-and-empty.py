@@ -1,0 +1,12 @@
+# Màn hẹp (60 cột), đổi topic bằng `/`, và topic không ra kết quả.
+typ("sqlite wal internals", 0.03)
+os.write(fd, b"\r")
+pump(8.0)
+snapshot("sqlite wal internals")
+typ("/", 0.2)
+typ("quantum knitting patterns", 0.03)
+os.write(fd, b"\r")
+pump(6.0)
+snapshot("topic khong co ket qua")
+os.write(fd, b"q")
+pump(1.0)
