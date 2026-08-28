@@ -1,4 +1,4 @@
-# Màn hẹp (60 cột), đổi topic bằng `/`, và topic không ra kết quả.
+# Kiểm tra màn hình hẹp, đổi topic và trạng thái rỗng.
 typ("sqlite wal internals", 0.03)
 os.write(fd, b"\r")
 pump(8.0)

@@ -24,7 +24,6 @@ func TestStemHoiTuVeMotGoc(t *testing.T) {
 }
 
 func TestStemGiuNguyenTokenNgan(t *testing.T) {
-	// Cắt hậu tố token ngắn sẽ phá tên công nghệ: "css" → "c", "ios" → "i".
 	for _, tok := range []string{"go", "c", "css", "ios", "wal", "sql", "zig", "rust"} {
 		if got := stem(tok); got != tok {
 			t.Errorf("stem(%q) = %q, muốn giữ nguyên", tok, got)
@@ -33,7 +32,6 @@ func TestStemGiuNguyenTokenNgan(t *testing.T) {
 }
 
 func TestTokenizeGiuKyTuTenNgonNgu(t *testing.T) {
-	// '+' và '#' là một phần của tên ngôn ngữ, cắt đi là mất tag `c++`.
 	got := tokenize("C++ vs C# programming")
 	want := []string{"c++", "c#", "programming"} // "vs" là từ nối, bỏ
 	if !reflect.DeepEqual(got, want) {
@@ -42,8 +40,6 @@ func TestTokenizeGiuKyTuTenNgonNgu(t *testing.T) {
 }
 
 func TestTagTokensBoTuChungChung(t *testing.T) {
-	// tagTokens dùng để chọn tag nên phải bỏ từ chung; tokenize dùng để lọc
-	// title nên giữ lại. Trộn hai cái là mất khả năng lọc bài lạc đề.
 	if got, want := tagTokens("compiler design"), []string{"compiler"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("tagTokens = %v, muốn %v", got, want)
 	}
@@ -59,8 +55,6 @@ func TestMatchesAnyRongThiKhongLoc(t *testing.T) {
 }
 
 func TestMatchesAnyKhongKhopTuChungPhu(t *testing.T) {
-	// "going" không được coi là "go" — nếu stem cắt bừa thì mọi bài có chữ
-	// "going" sẽ lọt vào kết quả topic Go.
 	if matchesAny("Going freestanding", []string{"go"}) {
 		t.Error(`"Going freestanding" không được khớp token "go"`)
 	}
@@ -69,7 +63,6 @@ func TestMatchesAnyKhongKhopTuChungPhu(t *testing.T) {
 	}
 }
 
-// tagFixture là tập con tag thật của lobste.rs (verify 2026-08-26).
 var tagFixture = []Tag{
 	{Tag: "go", Description: "Golang programming", Active: true},
 	{Tag: "rust", Description: "Rust programming", Active: true},
@@ -103,7 +96,7 @@ func TestMatchTags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotTags, gotExtra := matchTags(tt.topic, tagFixture)
+			gotTags, gotExtra := matchTags(tt.topic, tagFixture, tagAliases)
 			if !reflect.DeepEqual(gotTags, tt.wantTags) {
 				t.Errorf("tag = %v, muốn %v", gotTags, tt.wantTags)
 			}
@@ -115,7 +108,7 @@ func TestMatchTags(t *testing.T) {
 }
 
 func TestMatchTagsKhongVuotQuaMaxTags(t *testing.T) {
-	tags, _ := matchTags("go rust elixir databases distributed", tagFixture)
+	tags, _ := matchTags("go rust elixir databases distributed", tagFixture, tagAliases)
 	if len(tags) > maxTags {
 		t.Errorf("matchTags trả %d tag (%v), tối đa %d", len(tags), tags, maxTags)
 	}

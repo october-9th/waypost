@@ -438,16 +438,17 @@ nhưng biết để đừng tin dòng tag đó.
 
 # V4 — Hai nhánh: Articles/Research và Repos (kế hoạch — 2026-08-27)
 
-> **Trạng thái: thiết kế, CHƯA code.** Mục "Đã verify" là số đo thật ngày
-> 2026-08-27. Mục "Rủi ro đã biết" là những chỗ đã đo ra vấn đề nhưng vẫn
-> quyết định giữ — ghi lại để lúc build không ngạc nhiên.
+> **Trạng thái: ĐÃ BUILD (2026-08-27).** Mục "Đã verify" là số đo thật trước
+> khi code. Mục "Rủi ro đã biết" là chỗ đã đo ra vấn đề nhưng vẫn giữ trong
+> thiết kế. Mục "Đã chốt khi build" ở cuối ghi những chỗ **thiết kế này sai**
+> và code đi khác — đọc mục đó trước khi tin phần trên.
 
 ## Kiến trúc tổng thể
 
 Hai nhánh **hoàn toàn tách biệt**: không dùng chung pipeline, không merge score.
 
 ```
-albert articles <topic>      # nội dung để đọc: article, paper, newsletter
+albert articles <topic>      # nội dung để đọc: article, paper
 albert repos --lang <X>      # project/tool đang trending
 ```
 
@@ -471,22 +472,13 @@ tầng điểm số.
 
 | # | Nguồn | content_type | Cách lấy | Signal rank |
 |---|---|---|---|---|
-| 1 | Hacker News | `community-voted` | **Algolia Search API** (`hn.algolia.com/api/v1/search`) — xem ghi chú | native upvote (`points`) |
+| 1 | Hacker News | `community-voted` | Algolia Search API (`hn.algolia.com/api/v1/search`) | native upvote (`points`) |
 | 2 | lobste.rs | `community-voted` | JSON endpoint `/t/{tag}.json` | native upvote (`score`) |
-| 3 | dev.to | `community-voted` | REST `dev.to/api/articles?tag=X&top=7` | `positive_reactions_count` |
-| 4 | Company engineering blogs | `editorial-curated` | RSS, tự curate list ~30–50 blog | không chấm điểm — nguồn đã filter sẵn |
-| 5 | arXiv | `academic` | Atom feed theo category (`cs.SE`, `cs.DC`…) | không có signal nội tại, chỉ candidate |
-| 6 | Semantic Scholar | enrich cho #5 | API qua arXiv ID | enrich (`citationCount`, `tldr`), KHÔNG rank |
+| 3 | dev.to | `community-voted` | REST `dev.to/api/articles?tag=X&top=N` | `positive_reactions_count` |
+| 4 | arXiv | `academic` | Atom feed theo category (`cs.SE`, `cs.DC`…) | không có signal nội tại, chỉ candidate |
+| 5 | Semantic Scholar | enrich cho #4 | API qua arXiv ID | enrich (`citationCount`, `tldr`), KHÔNG rank |
 
-**Ghi chú #1 — dùng Algolia, KHÔNG dùng Firebase.** Firebase API
-(`hacker-news.firebaseio.com`) **không có search**: đo được `topstories.json`
-→ 200, `search.json?query=…` → `{"error":"Permission denied"}`. Firebase chỉ
-cho item-by-ID và các list top/new/best. Đổi sang Firebase = mất hẳn khả năng
-tìm theo topic — nhánh articles sẽ không còn chạy được. Giữ Algolia như V1.
-
-**Ghi chú #3 — host đúng là `dev.to/api/...`, không phải `api.dev.to`.**
-Đo: `api.dev.to` không resolve (`http=000`); `dev.to/api/articles?tag=go&top=7`
-→ 200. `top=7` = top theo reaction trong 7 ngày.
+Host dev.to đúng là `dev.to/api/...` — `api.dev.to` không resolve.
 
 ### Common struct (trước khi dedup)
 
@@ -494,9 +486,8 @@ tìm theo topic — nhánh articles sẽ không còn chạy được. Giữ Algo
 { url, title, source, source_native_score, published_at, content_type }
 ```
 
-`source_native_score` chỉ có nghĩa **trong phạm vi một content_type**. Với
-`editorial-curated` nó rỗng — **đừng để `0`**, sort chung sẽ chôn hết nguồn
-curate xuống đáy.
+`source_native_score` chỉ có nghĩa **trong phạm vi một content_type** — không so
+điểm dev.to với điểm HN (xem magnitude đo được ở mục Đã verify).
 
 ### Dedup/canonicalize — làm tăng dần, không build trước khi thấy vấn đề
 
@@ -519,13 +510,21 @@ curate xuống đáy.
   *"chưa có tín hiệu chất lượng"*, **không giả vờ ranking**. Cùng tinh thần
   `SortRelevance` ở V3: không có phán quyết thì thú nhận, đừng chế điểm.
 
+### Trạng thái credential
+
+| Nguồn | Trạng thái |
+|---|---|
+| Semantic Scholar | **Đang xin API key.** Pool ẩn danh 429 ngay request đầu → chưa có key thì coi như không dùng được. |
+| Reddit | **Đang xin API key.** Chưa xếp vào bảng nguồn cho tới khi đo được rate limit thật. |
+| dev.to | Có key test, **nhưng key không đổi được gì** — xem "Rủi ro đã biết" #1. |
+
 ### Nguồn đã xét và loại
 
 | Nguồn | Lý do loại |
 |---|---|
 | Medium | Chất lượng giảm từ 2023 (đổi paywall + Partner Program), signal/noise thấp |
-| Substack (dạng search source) | Không có quality signal công khai; RSS không có like/restack count, không có search cross-publication. Nếu muốn thì gộp vào #4 dạng allowlist RSS. |
-| Reddit r/programming | ⚠️ **Lý do chưa verify** — ghi là "API tính phí từ 2023" nhưng chưa đo được (sandbox chặn reddit.com). Free tier thực tế có thể là 100 QPM/OAuth client cho non-commercial, thừa cho CLI cá nhân. Kiểm lại trước khi coi là chốt. |
+| Substack | Không có quality signal công khai — RSS không có like/restack count, không có search cross-publication |
+| Company engineering blogs (RSS) | RSS chỉ trả ~10–20 item mới nhất, không lịch sử, không param query ⇒ không phục vụ được `articles <topic>`. Muốn dùng phải poll + index, mâu thuẫn với kiến trúc fetch-and-display. |
 | Tildes | Invite-only, volume tech quá nhỏ |
 | daily.dev | Không public API cho bên thứ 3, nội dung trùng dev.to/HN |
 | Hashnode | Có API nhưng overlap content-type với dev.to, chưa có gap cụ thể |
@@ -560,52 +559,134 @@ Chưa quyết giữ cả hai hay bỏ một.
 
 | Nguồn | Kết quả |
 |---|---|
-| **HN Firebase** | ❌ `topstories.json` → 200 nhưng `search.json?query=…` → `{"error":"Permission denied"}`. **Firebase không có search.** Phải dùng Algolia. |
-| **dev.to host** | `api.dev.to` → `http=000` (không resolve). `dev.to/api/articles?tag=go&top=7` → ✅ 200. |
-| **dev.to fields** | ✅ Có thật: `positive_reactions_count`, `public_reactions_count`, `comments_count`. Magnitude thấp — top 3 tag `go` là 38 / 23 / 9 reaction (HN cùng ngày: 559đ). Củng cố quyết định rank riêng theo content_type. |
+| **dev.to — có API key** | Auth OK (`/api/users/me` → 200). **Nhưng key không mở được search**: `?q=wal internals` vẫn trả feed mới nhất y hệt lúc không auth; `/api/search/feed_content` → **404** (endpoint không tồn tại trong public API). ⇒ dev.to chỉ có `?tag=`. |
+| **dev.to — magnitude signal** | `tag=go&top=7` → 10 / 6 / 1 reaction. `top=30` → 38 / 23 / 9. HN cùng ngày: 559đ. **Cửa sổ 7 ngày quá hẹp**, dùng `top=30` trở lên; kể cả vậy vẫn là tín hiệu mỏng hơn HN hai bậc. |
+| **dev.to fields** | ✅ `positive_reactions_count`, `public_reactions_count`, `comments_count` có thật. |
 | **GitHub trending** | ✅ `github.com/trending/go?since=weekly` → 200 với UA tự đặt. Parse được 20 `Box-row`, star delta đúng dạng `"366 stars this week"`. |
 | **arXiv** | ✅ 200 — **bắt buộc set User-Agent định danh**; UA mặc định của curl → **429**. Phải dùng `https://export.arxiv.org` (http → 301). |
-| **Semantic Scholar** | ❌ **429 ngay request đầu, 5/5 lần**, có UA lẫn không. Pool ẩn danh dùng chung toàn cầu. Cần xin API key (form free). |
+| **Semantic Scholar** | ❌ **429 ngay request đầu, 5/5 lần**, có UA lẫn không. Đang xin key. |
 | **lobste.rs tag `ai`** | 75 bài gần nhất của tag `ai` **không bài nào** title chứa claude/memory/anthropic. lobste.rs không phủ chủ đề AI tooling. |
 
 ## Rủi ro đã biết — chấp nhận khi build
 
-Ba chỗ đã đo ra vấn đề nhưng vẫn giữ trong thiết kế. Ghi lại để lúc build biết
-trước, đừng debug lại từ đầu:
-
-1. **dev.to không có full-text search — và fail *im lặng*.**
-   `dev.to/api/articles?q=wal+internals` → 200 nhưng **bỏ qua hẳn param `q`**,
-   trả về feed mới nhất (`"Welcome Thread - v390"`). Endpoint nội bộ
-   `dev.to/search/feed_content` → 200 + `{"result": []}` cho **mọi** query thử
-   (`postgres`, `claude code`, `wal`) — cần session, không dùng được từ CLI.
-   ⇒ Chỉ có `?tag=X` dùng được, tức dev.to mắc **đúng bệnh tag-matching của
+1. **dev.to không có full-text search, và fail *im lặng*.** `?q=...` trả 200
+   nhưng **bỏ qua hẳn param**, trả feed mới nhất (`"Welcome Thread - v390"` cho
+   query `wal internals`). **Đã thử lại với API key: y hệt.** Không có endpoint
+   search nào trong public API (404).
+   ⇒ Chỉ `?tag=X` dùng được, tức dev.to mắc **đúng bệnh tag-matching của
    lobste.rs**: topic không map được tag thì nguồn này rớt. Cần logic map
-   topic→tag riêng cho dev.to, và khi không map được thì **báo rõ như lobste.rs
-   đang làm**, đừng im lặng trả feed sai.
+   topic→tag riêng cho dev.to; khi không map được thì **báo rõ như lobste.rs
+   đang làm**, tuyệt đối đừng để `?q=` trả feed sai mà tưởng là kết quả tìm.
 
-2. **Semantic Scholar là optional, không phải dependency.** 429 ngay request
-   đầu. Pipeline phải chạy đúng khi S2 fail — enrich thiếu thì bỏ trống field,
-   không làm hỏng cả nhánh academic.
+2. **Semantic Scholar là optional, không phải dependency.** Pipeline phải chạy
+   đúng khi S2 fail — enrich thiếu thì để trống field, không làm hỏng cả nhánh
+   academic. Kể cả khi có key.
 
 3. **arXiv cross-ref HN gần như là no-op.** Đo tỉ lệ link arxiv trong kết quả
    HN: `transformer attention` 6/37 (16%), `distributed consensus` 2/50 (4%,
    có bài 343đ), `llm inference` 3/50 (6%). Paper nào có tín hiệu cộng đồng thì
    **search HN đã lấy được rồi**. Net-new của arXiv feed chỉ là danh sách
-   chronological không ranking. Build sau cùng, và đừng kỳ vọng nó nâng chất
-   lượng top-10.
+   chronological không ranking. Build sau cùng, đừng kỳ vọng nó nâng top-10.
 
-## Việc chưa quyết
+## Đã chốt khi build (2026-08-27)
 
-1. **Ngưỡng điểm sàn** — chưa có trong thiết kế nhưng là thứ rẻ nhất, tác động
-   lớn nhất. Query `claude memory` (2026-08-27): #1–#2 là 559đ/448đ, từ #5
-   xuống chỉ 3–17đ và gần như toàn Show HN self-promo. Thêm nguồn không sửa
-   được đuôi rác này; cắt dưới ngưỡng thì sửa ngay.
-2. **`tagAliases` thiếu tên sản phẩm AI** — `internal/search/lobsters.go:28` có
-   `llm/llms → ai` nhưng không có `claude`, `anthropic`, `gpt`, `openai`,
-   `copilot`. Fix 5 dòng. Sẽ cần lại y hệt cho dev.to.
-3. **Trending vs search cho GitHub** — giữ cả hai pane hay bỏ một.
-4. **`editorial-curated` search kiểu gì** — RSS chỉ trả ~10–20 item mới nhất,
-   không có lịch sử, không có param query. `albert articles <topic>` sẽ miss
-   gần hết nhóm #4 trừ khi bài vừa mới đăng. Hai lối: (a) tách `albert feed`
-   không nhận topic, chỉ hiện bài mới; (b) poll định kỳ + index + full-text.
-   (b) đội scope lên nhiều và mâu thuẫn với "không lưu DB". **Chưa chọn.**
+Ba việc trước đây để ngỏ, giờ đã chốt và đã code.
+
+### 1. Ngưỡng điểm sàn HN = 10, min-keep = 5 ✅
+
+`internal/search/threshold.go`. Flag `-min-score` để đổi (0 = tắt).
+
+Đo lại rộng hơn — 12 topic, 326 hit: **median điểm chỉ 2–4**. Đuôi rác không
+phải thiểu số, nó là đa số.
+
+| Luật | Giữ /326 | Kết luận |
+|---|---|---|
+| sàn 10 | 162 (50%) | **chọn** |
+| sàn 20 | 140 (43%) | ở topic dày cắt cả bài thật (agent harness 22→16) |
+| 5% điểm max | 155 | topic hot (max 682/915) đẩy sàn lên 34/45, cắt bài 29đ/23đ thật |
+| Show HN ngưỡng riêng 10/25 | 157 | chỉ khác sàn-10 đúng 5 slot/326 — không đáng thêm code |
+
+**Luật tương đối tệ hơn tuyệt đối** vì nó cắt mạnh nhất đúng lúc topic có nhiều
+bài hay nhất. Việc "đừng cắt khi topic chưa có điểm" thì min-keep làm rõ ràng
+hơn, và sàn **tự tắt ở `-sort relevance`** — mode đó tồn tại đúng để phục vụ
+topic cộng đồng chưa phán quyết.
+
+Sàn CHỈ áp cho HN. lobste.rs thang nhỏ hơn cả chục lần, dùng chung sàn là xoá
+sổ nguồn đó.
+
+### 2. `tagAliases` — đã thêm claude/anthropic/gpt/openai/copilot → `ai` ✅
+
+`internal/search/lobsters.go`. Nhưng **số đo cũ vẫn đúng và alias này không
+sửa được nó**: lobste.rs không phủ AI tooling. Quan sát sau khi thêm, query
+`claude memory` lôi về *"June Framework Memory and storage pricing updates"*
+(5đ, tag `ai`) — bài về **giá RAM**, lọt vì extra-token chỉ còn `memory` và
+`matchesAny` khớp bất kỳ. Alias mở cửa feed `ai` ra, và rác đi kèm qua cửa đó.
+Không nghiêm trọng (điểm 5 thì nằm đáy bảng), nhưng đừng tưởng alias đã fix gì.
+
+### 3. GitHub: GIỮ CẢ HAI ✅
+
+Hai pane riêng, không bỏ cái nào — chúng trả lời hai câu khác nhau:
+`search/repositories` = *"có ai build X chưa"* (theo query);
+`github.com/trending` = *"tuần này nổi gì"* (KHÔNG theo query).
+TUI: `tab` vòng qua **bài → repo → trending**.
+
+Trending không nhận query, nên ngôn ngữ đoán từ token của topic
+(`go scheduler` → `/trending/go`); không đoán được thì lấy mọi ngôn ngữ.
+Flag `-lang` để ép.
+
+---
+
+## Chỗ thiết kế SAI, code đã đi khác
+
+**1. arXiv: dùng `search_query`, KHÔNG dùng Atom feed theo category.**
+Thiết kế trên ghi "Atom feed theo category (`cs.SE`, `cs.DC`…)". Sai — arXiv có
+full-text search thật: `search_query=all:"<topic>"&sortBy=relevance`. Đã chạy:
+`"speculative decoding"` → 682 kết quả. Feed category chỉ trả paper mới nhất
+của cả ngành, chẳng liên quan gì tới topic đang gõ.
+
+Kèm theo đó, bộ lọc phải **chặt hơn HN chứ không giống HN**: đòi **mọi** token
+của topic có mặt trong **title** (`matchesAll`, không phải `matchesAny`, và
+không xét abstract). Lý do đo được: `go scheduler` với bộ lọc lỏng vẫn lôi về
+paper task-scheduling cho data center — abstract nào chẳng có chữ "go". Kết quả
+sau khi siết: `go scheduler` → 0 paper, `claude memory` → 0, `speculative
+decoding` → 5, `raft consensus` → 5. Đúng ý đồ: **arXiv im lặng khi topic không
+phải thuật ngữ nghiên cứu.** Nguồn không có tín hiệu chất lượng thì thà 0 kết
+quả còn hơn đoán bừa.
+
+**2. dev.to: KHÔNG dùng `short_summary` làm Description để map tag.**
+Thiết kế nói "cần logic map topic→tag riêng giống matchTags". Đúng phần map,
+sai phần dữ liệu. `matchTags` dùng lại được nguyên xi (chỉ tham số hoá bảng
+alias), nhưng phải **bỏ hẳn `short_summary`**: nó là văn quảng cáo có kể tên
+ngôn ngữ. Đo được — summary của tag `githubcopilot` chứa câu *"...works
+especially well for Python, JavaScript, TypeScript, Ruby, **Go**, C# and C++"*,
+nên `go scheduler` khớp luôn tag đó. dev.to chỉ khớp theo **tên tag + alias**.
+(lobste.rs thì ngược lại: description của nó là tên gọi khác của tag, dùng tốt.)
+
+**3. `ContentType` phân nhóm theo THANG ĐIỂM, không theo bản chất nội dung.**
+Thiết kế xếp dev.to chung `community-voted` với HN. Không dùng được: cùng là
+upvote nhưng dev.to thấp hơn hai bậc (38 reaction vs 559 điểm), trộn chung thì
+dev.to chìm nghỉm ở đáy — tức thêm nguồn mà không thêm thông tin. Ba nhóm thật
+sự là `TypeVoted` (HN+lobste.rs) / `TypeBlog` (dev.to) / `TypeAcademic` (arXiv).
+
+Rank riêng từng nhóm, nối lại **chỉ ở `Report.compose`** — tầng hiển thị.
+`topN` chỉ cắt nhóm chính; hai nhóm phụ lục có hạn riêng `appendixMax = 5`,
+nếu không thì `-n` nhỏ sẽ xoá sạch nhóm chính rồi để dev.to chiếm màn hình.
+arXiv in điểm là **`—` chứ không phải `0`**: số 0 trông như bị chấm 0 điểm,
+còn đây là chưa ai chấm cả.
+
+Dedup chéo nhóm (`dropSeen`) chỉ dùng bậc 1 — chuẩn hoá URL. Bản HN thắng, bản
+dev.to cross-post biến mất. Chưa đo được case nào cần bậc 2 (`rel=canonical`).
+
+---
+
+## Còn lại
+
+- **Semantic Scholar**: có API key nhưng chưa nối. Khi nối: enrich
+  `citationCount`/`tldr` cho nhánh arXiv, **KHÔNG rank** — paper mới ~0
+  citation nên rank kiểu đó chôn sống bài mới. Phải optional thật: S2 fail thì
+  field để trống, không làm hỏng cả nhánh academic.
+- **Reddit**: đang xin key, chưa xếp vào bảng nguồn.
+- **Scrape trending là chỗ dễ vỡ nhất** trong cả pipeline. Có test offline với
+  fixture HTML thật (`internal/search/testdata/trending-go.html`) để biết ngay
+  khi GitHub đổi markup. Parse 0 dòng thì **báo lỗi**, không trả danh sách rỗng
+  im lặng — trending thì luôn có repo, 0 dòng gần như chắc chắn là parser hỏng.

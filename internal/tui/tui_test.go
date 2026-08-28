@@ -27,7 +27,6 @@ func sampleResults(n int) []search.Result {
 	return out
 }
 
-// withResults dựng model đã có sẵn kết quả, bỏ qua đường mạng.
 func withResults(t *testing.T, n, w, h int) Model {
 	t.Helper()
 	m := New(nil, "", 15, search.SortScore).resize(w, h)
@@ -65,7 +64,6 @@ func TestCursorMovesAndWindowFollows(t *testing.T) {
 		t.Fatalf("con trỏ %d nằm ngoài cửa sổ [%d,%d)", m.cursor[paneArticles], m.offset[paneArticles], m.offset[paneArticles]+n)
 	}
 
-	// Đi quá cuối danh sách thì dừng ở bài cuối, không tràn.
 	m = key(t, m, "j")
 	if m.cursor[paneArticles] != 14 {
 		t.Fatalf("cursor sau khi vượt cuối = %d, muốn 14", m.cursor[paneArticles])
@@ -81,8 +79,6 @@ func TestCursorMovesAndWindowFollows(t *testing.T) {
 	}
 }
 
-// Gõ topic mới trong lúc topic cũ chưa xong là chuyện thường; kết quả cũ về
-// trễ không được phép ghi đè kết quả đang xem.
 func TestStaleResultsIgnored(t *testing.T) {
 	m := withResults(t, 3, 80, 24)
 	m.seq = 7
@@ -146,15 +142,13 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-// `s` phải sắp lại từ merged mà KHÔNG gọi lại API (client là nil trong test —
-// gọi mạng là panic ngay).
 func TestDoiSortTaiCho(t *testing.T) {
 	m := withResults(t, 5, 100, 30)
-	m.merged = []search.Result{
+	m.rep = search.Report{Merged: []search.Result{
 		{URL: "https://a/1", Title: "relevance đầu", Score: 4, Source: search.SourceHN},
 		{URL: "https://b/2", Title: "điểm cao", Score: 90, Source: search.SourceHN},
-	}
-	m.results = search.SortResults(m.merged, search.SortScore)
+	}}
+	m.results = m.rep.Compose(search.SortScore, m.topN)
 
 	got := key(t, m, "s")
 	if got.mode != search.SortRelevance {
@@ -170,10 +164,9 @@ func TestDoiSortTaiCho(t *testing.T) {
 	}
 }
 
-// tab đổi pane và mỗi pane giữ con trỏ riêng.
 func TestTabDoiPaneVaGiuConTro(t *testing.T) {
 	m := withResults(t, 6, 100, 30)
-	m.repos = []search.Repo{
+	m.rep.Repos = []search.Repo{
 		{FullName: "a/one", URL: "https://github.com/a/one", Stars: 10},
 		{FullName: "b/two", URL: "https://github.com/b/two", Stars: 20},
 	}
@@ -196,12 +189,15 @@ func TestTabDoiPaneVaGiuConTro(t *testing.T) {
 	}
 
 	m = key(t, m, "tab")
+	if m.pane != paneTrending {
+		t.Fatalf("tab lần hai phải sang pane trending, got %v", m.pane)
+	}
+	m = key(t, m, "tab")
 	if m.pane != paneArticles || m.cursor[paneArticles] != 2 {
-		t.Errorf("quay lại pane bài phải giữ con trỏ ở 2, got pane=%v cursor=%d", m.pane, m.cursor[paneArticles])
+		t.Errorf("vòng hết ba pane phải về pane bài và giữ con trỏ ở 2, got pane=%v cursor=%d", m.pane, m.cursor[paneArticles])
 	}
 }
 
-// Topic mới nổi hay ra 0 bài mà vẫn có repo — phải nhảy thẳng sang pane repo.
 func TestKhongCoBaiThiNhaySangRepo(t *testing.T) {
 	m := New(nil, "", 15, search.SortScore).resize(100, 30)
 	m.seq = 1

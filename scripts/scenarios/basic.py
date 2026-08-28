@@ -1,5 +1,4 @@
-# Tìm một topic đông bài, đi xuống vài dòng, thoát.
-# Cố tình KHÔNG bấm enter/c/y: chúng mở browser thật và ghi đè clipboard thật.
+# Tìm topic, di chuyển rồi thoát mà không kích hoạt tác vụ bên ngoài.
 typ("go scheduler", 0.03)
 os.write(fd, b"\r")
 pump(8.0)

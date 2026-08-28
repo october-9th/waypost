@@ -1,9 +1,4 @@
-// Package tui là frontend thứ hai của albert, bên cạnh CLI một phát ăn ngay.
-//
-// Lý do tồn tại: vòng lặp dùng thật là "gõ topic → lướt kết quả → mở vài bài →
-// đổi topic thử lại". Chạy lại lệnh cho mỗi vòng thì mệt.
-//
-// Toàn bộ logic tìm kiếm nằm ở internal/search; package này chỉ vẽ và bắt phím.
+// Package tui cung cấp giao diện terminal cho albert.
 package tui
 
 import (
@@ -17,17 +12,12 @@ import (
 	"albert/internal/search"
 )
 
-// Kích thước giả định trước khi terminal báo kích thước thật.
 const (
 	defaultWidth  = 80
 	defaultHeight = 24
 
-	// linesPerItem là số dòng mỗi kết quả chiếm trong danh sách. Cố định để
-	// phép tính cửa sổ cuộn không phụ thuộc nội dung từng bài.
 	linesPerItem = 2
 
-	// chrome là số dòng dành cho header, khoảng trắng, khung chi tiết và
-	// footer — phần còn lại của màn hình mới là danh sách.
 	chrome = 8
 )
 
@@ -38,17 +28,28 @@ const (
 	focusList
 )
 
-// pane chọn danh sách đang xem. Hai danh sách trả lời hai câu hỏi khác nhau
-// nên không trộn vào nhau: "bài nào đáng đọc" và "đã có ai build chưa".
 type pane int
 
 const (
 	paneArticles pane = iota
 	paneRepos
+	paneTrending
 	numPanes
 )
 
-// Model là state của TUI. Tạo bằng New.
+// String trả về nhãn ngắn.
+func (p pane) String() string {
+	switch p {
+	case paneRepos:
+		return "repo"
+	case paneTrending:
+		return "trending"
+	default:
+		return "bài"
+	}
+}
+
+// Model lưu trạng thái TUI.
 type Model struct {
 	client *search.Client
 	topN   int
@@ -59,28 +60,18 @@ type Model struct {
 	pane  pane
 	mode  search.SortMode
 
-	// seq tăng mỗi lần bắt đầu tìm. Kết quả về trễ mà seq không khớp thì bỏ:
-	// gõ topic mới trong lúc topic cũ chưa xong là chuyện bình thường.
 	seq     int
 	loading bool
 	cancel  context.CancelFunc
 
 	topic   string
 	results []search.Result
-	// merged là toàn bộ kết quả theo thứ tự relevance gốc; giữ lại để đổi
-	// sort tại chỗ, không gọi lại API.
-	merged []search.Result
-	repos  []search.Repo
-	tags   []string
-	warns  []error
-	err    error
+	rep     search.Report
+	warns   []error
+	err     error
 
-	// status là thông báo tạm cho hành động vừa làm (mở link, copy). Xoá ngay
-	// khi bấm phím tiếp theo để không đọng lại thông tin cũ.
 	status string
 
-	// Con trỏ và cửa sổ cuộn riêng cho từng pane — chuyển qua chuyển lại mà
-	// mất chỗ đang đọc thì rất khó chịu.
 	cursor [numPanes]int
 	offset [numPanes]int
 
@@ -88,7 +79,6 @@ type Model struct {
 	height int
 }
 
-// startSearchMsg khởi động lần tìm đầu tiên khi mở TUI kèm sẵn topic.
 type startSearchMsg struct{}
 
 type resultsMsg struct {
@@ -103,7 +93,7 @@ type actionMsg struct {
 	err error
 }
 
-// New tạo model. initialTopic khác rỗng thì tìm luôn khi khởi động.
+// New tạo model TUI và tìm ngay nếu có initialTopic.
 func New(c *search.Client, initialTopic string, topN int, mode search.SortMode) Model {
 	in := textinput.New()
 	in.Placeholder = "topic cần đọc, vd: go scheduler"
@@ -129,7 +119,7 @@ func New(c *search.Client, initialTopic string, topN int, mode search.SortMode) 
 	}
 }
 
-// Run chạy TUI cho tới khi người dùng thoát.
+// Run chạy TUI đến khi người dùng thoát.
 func Run(c *search.Client, initialTopic string, topN int, mode search.SortMode) error {
 	p := tea.NewProgram(New(c, initialTopic, topN, mode), tea.WithAltScreen())
 	_, err := p.Run()
@@ -139,14 +129,11 @@ func Run(c *search.Client, initialTopic string, topN int, mode search.SortMode) 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{textinput.Blink}
 	if strings.TrimSpace(m.input.Value()) != "" {
-		// Init chỉ trả về Cmd, không sửa được model, nên phải đi vòng qua một
-		// message thì seq/loading mới thật sự vào state.
 		cmds = append(cmds, func() tea.Msg { return startSearchMsg{} })
 	}
 	return tea.Batch(cmds...)
 }
 
-// startSearch huỷ lần tìm đang chạy (nếu có) rồi bắt đầu lần mới.
 func (m Model) startSearch() (Model, tea.Cmd) {
 	topic := strings.TrimSpace(m.input.Value())
 	if topic == "" {
@@ -173,12 +160,25 @@ func (m Model) startSearch() (Model, tea.Cmd) {
 	return m, tea.Batch(run, m.spin.Tick)
 }
 
-// paneLen là số mục của pane đang xem.
 func (m Model) paneLen() int {
-	if m.pane == paneRepos {
-		return len(m.repos)
+	switch m.pane {
+	case paneRepos:
+		return len(m.rep.Repos)
+	case paneTrending:
+		return len(m.rep.Trending)
+	default:
+		return len(m.results)
 	}
-	return len(m.results)
+}
+
+func (m Model) paneRepoList() []search.Repo {
+	switch m.pane {
+	case paneRepos:
+		return m.rep.Repos
+	case paneTrending:
+		return m.rep.Trending
+	}
+	return nil
 }
 
 func (m Model) selectedResult() (search.Result, bool) {
@@ -190,14 +190,14 @@ func (m Model) selectedResult() (search.Result, bool) {
 }
 
 func (m Model) selectedRepo() (search.Repo, bool) {
-	i := m.cursor[paneRepos]
-	if m.pane != paneRepos || i < 0 || i >= len(m.repos) {
+	list := m.paneRepoList()
+	i := m.cursor[m.pane]
+	if list == nil || i < 0 || i >= len(list) {
 		return search.Repo{}, false
 	}
-	return m.repos[i], true
+	return list[i], true
 }
 
-// currentURL là link của mục đang chọn, bất kể đang ở pane nào.
 func (m Model) currentURL() string {
 	if r, ok := m.selectedResult(); ok {
 		return r.URL
@@ -208,7 +208,6 @@ func (m Model) currentURL() string {
 	return ""
 }
 
-// visibleItems là số mục vẽ vừa màn hình hiện tại.
 func (m Model) visibleItems() int {
 	n := (m.height - chrome) / linesPerItem
 	if n < 1 {
@@ -217,18 +216,12 @@ func (m Model) visibleItems() int {
 	return n
 }
 
-// resize áp kích thước terminal mới. Ô nhập có Width riêng nên phải chỉnh
-// cùng lúc, nếu không textinput vẫn đệm khoảng trắng theo bề rộng cũ và làm
-// dòng header tràn ra ngoài.
 func (m Model) resize(w, h int) Model {
 	m.width, m.height = w, h
-	// headerView đã tiêu " albert " + marker; trừ dư một ô cho con trỏ mà
-	// textinput vẽ thêm ở cuối.
 	m.input.Width = maxInt(10, w-13)
 	return m.clampWindow()
 }
 
-// clampWindow kéo cửa sổ cuộn về đúng vị trí con trỏ của pane đang xem.
 func (m Model) clampWindow() Model {
 	total := m.paneLen()
 	p := m.pane
@@ -281,22 +274,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.topic = msg.topic
 		m.err = msg.err
+		m.rep = msg.rep
 		m.results = msg.rep.Results
-		m.merged = msg.rep.Merged
-		m.repos = msg.rep.Repos
-		m.tags = msg.rep.LobstersTags
 		m.warns = msg.rep.Warnings
 		m.cursor = [numPanes]int{}
 		m.offset = [numPanes]int{}
 		m.pane = paneArticles
-		// Topic mới nổi hay ra 0 bài mà vẫn có repo. Nhảy thẳng sang pane repo
-		// thay vì bắt người dùng đoán là còn thứ khác đang nấp sau phím tab.
-		if len(m.results) == 0 && len(m.repos) > 0 {
+		if len(m.results) == 0 && len(m.rep.Repos) > 0 {
 			m.pane = paneRepos
+		} else if len(m.results) == 0 && len(m.rep.Trending) > 0 {
+			m.pane = paneTrending
 		}
 		if m.paneLen() > 0 {
-			// Có kết quả thì chuyển focus sang danh sách luôn, để j/k dùng
-			// được ngay mà không phải bấm thêm phím nào.
 			m.focus = focusList
 			m.input.Blur()
 		}
@@ -329,8 +318,6 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startSearch()
 	case "esc":
 		if m.paneLen() > 0 {
-			// Trả ô nhập về topic của kết quả đang xem: bỏ dở việc gõ mà để
-			// lại chữ nửa vời trên header thì header nói dối về danh sách.
 			m.input.SetValue(m.topic)
 			m.input.CursorEnd()
 			m.focus = focusList
@@ -377,31 +364,23 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.clampWindow(), nil
 
 	case "tab":
-		if m.pane == paneArticles {
-			m.pane = paneRepos
-		} else {
-			m.pane = paneArticles
-		}
+		m.pane = (m.pane + 1) % numPanes
+		return m.clampWindow(), nil
+	case "shift+tab":
+		m.pane = (m.pane + numPanes - 1) % numPanes
 		return m.clampWindow(), nil
 
 	case "s":
-		// Đổi sort tại chỗ từ m.merged — không gọi lại API. lobste.rs là site
-		// nhỏ tự host, đừng bắt nó phục vụ lại chỉ vì đổi cách sắp xếp.
 		if m.mode == search.SortScore {
 			m.mode = search.SortRelevance
 		} else {
 			m.mode = search.SortScore
 		}
-		m.results = search.SortResults(m.merged, m.mode)
-		if m.topN > 0 && len(m.results) > m.topN {
-			m.results = m.results[:m.topN]
-		}
+		m.results = m.rep.Compose(m.mode, m.topN)
 		m.cursor[paneArticles], m.offset[paneArticles] = 0, 0
 		return m.clampWindow(), nil
 
 	case "/":
-		// Xoá sạch ô nhập: vòng lặp thật là "đổi topic thử lại", nên gõ tiếp
-		// vào topic cũ gần như luôn là ngoài ý muốn. Sửa topic cũ thì dùng `i`.
 		m.focus = focusInput
 		m.input.SetValue("")
 		return m, m.input.Focus()

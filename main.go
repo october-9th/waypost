@@ -1,10 +1,3 @@
-// albert tìm bài viết kỹ thuật đáng đọc theo topic, xếp hạng bằng điểm
-// upvote của Hacker News và lobste.rs thay vì tự chấm điểm bằng heuristic.
-//
-// Hai frontend dùng chung một lõi internal/search:
-//
-//	albert                     # TUI — gõ topic, lướt, mở bài, đổi topic
-//	albert search "go scheduler"   # một phát ăn ngay, in ra rồi thoát
 package main
 
 import (
@@ -36,16 +29,21 @@ func usage() {
   albert search [flags] "<topic>"   in kết quả ra stdout rồi thoát
 
 Flags:
-  -n int        số bài hiển thị (TUI 15, search 10)
-  -timeout dur  timeout mỗi HTTP request (mặc định 10s)
-  -sort string  score (mặc định) | relevance
-  -json         in JSON thay vì bảng (chỉ với search)
+  -n int         số bài hiển thị (TUI 15, search 10)
+  -timeout dur   timeout mỗi HTTP request (mặc định 10s)
+  -sort string   score (mặc định) | relevance
+  -min-score int sàn điểm cho bài Hacker News (mặc định 10, 0 = không cắt)
+  -lang string   ngôn ngữ cho GitHub trending (mặc định đoán từ topic)
+  -json          in JSON thay vì bảng (chỉ với search)
 
 Topic mới nổi thì thử -sort relevance: điểm cộng đồng chưa kịp hình thành nên
-sắp theo điểm là sắp theo nhiễu.
+sắp theo điểm là sắp theo nhiễu. Ở mode đó -min-score cũng tự tắt.
+
+Nguồn: Hacker News + lobste.rs xếp chung một bảng; dev.to và arXiv là phụ lục
+ở cuối vì thang điểm không so được (arXiv không có điểm nào, in "—").
 
 Phím trong TUI:
-  enter mở · c thảo luận · y copy link · j/k chọn · tab bài↔repo
+  enter mở · c thảo luận · y copy link · j/k chọn · tab bài→repo→trending
   s đổi sort · / topic mới · i sửa topic · r tìm lại · q thoát
 `)
 }
@@ -62,23 +60,19 @@ func run(args []string) error {
 	case args[0] == "tui":
 		return runTUI(args[1:])
 	default:
-		// Mọi thứ còn lại là topic gõ thẳng: `albert go scheduler`.
 		return runTUI(args)
 	}
 }
 
-// runTUI mở giao diện tương tác. Chỉ chạy được khi stdout là terminal thật —
-// `albert | less` hay chạy trong script thì phải dùng `albert search`.
 func runTUI(args []string) error {
 	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
 	fs.Usage = usage
 	topN := fs.Int("n", 15, "số bài hiển thị")
-	timeout := fs.Duration("timeout", 10*time.Second, "timeout mỗi HTTP request")
-	sortBy := fs.String("sort", "score", "sắp xếp: score | relevance")
+	cf := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	mode, err := parseSort(*sortBy)
+	mode, err := parseSort(*cf.sortBy)
 	if err != nil {
 		return err
 	}
@@ -87,8 +81,30 @@ func runTUI(args []string) error {
 		return fmt.Errorf("stdout không phải terminal — dùng `albert search \"<topic>\"` thay vì TUI")
 	}
 
-	c := search.NewClient(*timeout, cacheDir())
-	return tui.Run(c, strings.Join(fs.Args(), " "), *topN, mode)
+	return tui.Run(cf.client(), strings.Join(fs.Args(), " "), *topN, mode)
+}
+
+type commonFlags struct {
+	timeout  *time.Duration
+	sortBy   *string
+	minScore *int
+	lang     *string
+}
+
+func addCommonFlags(fs *flag.FlagSet) commonFlags {
+	return commonFlags{
+		timeout:  fs.Duration("timeout", 10*time.Second, "timeout mỗi HTTP request"),
+		sortBy:   fs.String("sort", "score", "sắp xếp: score | relevance"),
+		minScore: fs.Int("min-score", 10, "sàn điểm cho bài Hacker News (0 = không cắt)"),
+		lang:     fs.String("lang", "", "ngôn ngữ cho GitHub trending (rỗng = đoán từ topic)"),
+	}
+}
+
+func (cf commonFlags) client() *search.Client {
+	c := search.NewClient(*cf.timeout, cacheDir())
+	c.MinScore = *cf.minScore
+	c.TrendingLang = *cf.lang
+	return c
 }
 
 func isTerminal(f *os.File) bool {
@@ -103,13 +119,12 @@ func runSearch(args []string) error {
 	fs := flag.NewFlagSet("search", flag.ContinueOnError)
 	fs.Usage = usage
 	topN := fs.Int("n", 10, "số bài hiển thị")
-	timeout := fs.Duration("timeout", 10*time.Second, "timeout mỗi HTTP request")
 	asJSON := fs.Bool("json", false, "in JSON thay vì bảng")
-	sortBy := fs.String("sort", "score", "sắp xếp: score | relevance")
+	cf := addCommonFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	mode, err := parseSort(*sortBy)
+	mode, err := parseSort(*cf.sortBy)
 	if err != nil {
 		return err
 	}
@@ -120,12 +135,10 @@ func runSearch(args []string) error {
 		return fmt.Errorf("thiếu topic")
 	}
 
-	// Ctrl-C hủy request đang chạy thay vì để tiến trình treo tới hết timeout.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	c := search.NewClient(*timeout, cacheDir())
-	rep, err := c.Search(ctx, topic, *topN, mode)
+	rep, err := cf.client().Search(ctx, topic, *topN, mode)
 	if err != nil {
 		return err
 	}
@@ -144,7 +157,6 @@ func runSearch(args []string) error {
 	return nil
 }
 
-// parseSort đổi tên mode từ dòng lệnh sang SortMode.
 func parseSort(s string) (search.SortMode, error) {
 	switch s {
 	case "score", "":
@@ -156,14 +168,10 @@ func parseSort(s string) (search.SortMode, error) {
 	}
 }
 
-// reposShown — CLI in gọn, xem đủ thì mở TUI.
 const reposShown = 5
 
-// descMax là độ dài tối đa của mô tả repo in ra CLI.
 const descMax = 96
 
-// cacheDir trả về thư mục cache; chuỗi rỗng nếu OS không cho biết, khi đó
-// client chạy không cache.
 func cacheDir() string {
 	dir, err := os.UserCacheDir()
 	if err != nil {
@@ -173,19 +181,21 @@ func cacheDir() string {
 }
 
 func printTable(topic string, rep search.Report) {
-	if len(rep.LobstersTags) == 0 {
-		fmt.Fprintf(os.Stderr, "lobste.rs: topic %q không khớp tag nào — chỉ dùng Hacker News\n", topic)
-	} else {
-		fmt.Fprintf(os.Stderr, "lobste.rs: tag %s\n", strings.Join(rep.LobstersTags, ", "))
-	}
+	printTagNote("lobste.rs", topic, rep.LobstersTags)
+	printTagNote("dev.to", topic, rep.DevToTags)
 
-	if len(rep.Results) == 0 && len(rep.Repos) == 0 {
+	if len(rep.Results) == 0 && len(rep.Repos) == 0 && len(rep.Trending) == 0 {
 		fmt.Printf("Không có kết quả cho %q.\n", topic)
 		return
 	}
 
 	fmt.Println()
+	last := search.ContentType(255)
 	for i, r := range rep.Results {
+		if r.Type != last {
+			fmt.Print(groupHeading(r.Type))
+			last = r.Type
+		}
 		year := ""
 		if !r.Published.IsZero() {
 			year = fmt.Sprintf(" (%d)", r.Published.Year())
@@ -194,35 +204,57 @@ func printTable(topic string, rep search.Report) {
 		if r.ShowHN {
 			tag = " [Show HN]"
 		}
-		fmt.Printf("%2d. %5d  %s%s%s  [%s]\n", i+1, r.Score, r.Title, year, tag, r.Source)
+		score := fmt.Sprintf("%5d", r.Score)
+		if r.Type == search.TypeAcademic {
+			score = "    —"
+		}
+		fmt.Printf("%2d. %s  %s%s%s  [%s]\n", i+1, score, r.Title, year, tag, r.Source)
 		fmt.Printf("           %s\n", r.URL)
 	}
-	printRepos(rep.Repos)
+	printRepos("Đã có ai build chưa (GitHub search, xếp theo relevance)", rep.Repos)
+	printRepos("Tuần này nổi gì (GitHub trending, KHÔNG theo topic)", rep.Trending)
 	fmt.Println()
 }
 
-// printRepos in prior art thành mục RIÊNG. Sao GitHub không cùng thang với
-// điểm HN nên không trộn chung bảng; và câu hỏi cũng khác — "có ai build
-// chưa" chứ không phải "bài nào đáng đọc".
-func printRepos(repos []search.Repo) {
+func printTagNote(source, topic string, tags []string) {
+	if len(tags) == 0 {
+		fmt.Fprintf(os.Stderr, "%s: topic %q không khớp tag nào — bỏ qua nguồn này\n", source, topic)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "%s: tag %s\n", source, strings.Join(tags, ", "))
+}
+
+func groupHeading(t search.ContentType) string {
+	switch t {
+	case search.TypeBlog:
+		return "\n── dev.to (reaction, thang điểm thấp hơn HN hai bậc) ──\n\n"
+	case search.TypeAcademic:
+		return "\n── arXiv (preprint — CHƯA có tín hiệu chất lượng nào) ──\n\n"
+	default:
+		return ""
+	}
+}
+
+func printRepos(heading string, repos []search.Repo) {
 	if len(repos) == 0 {
 		return
 	}
-	fmt.Printf("\n── Đã có ai build chưa (GitHub, xếp theo relevance) ──\n\n")
+	fmt.Printf("\n── %s ──\n\n", heading)
 	for i, r := range repos {
 		if i >= reposShown {
 			break
 		}
 		note := ""
-		if r.Archived {
+		switch {
+		case r.StarsPeriod > 0:
+			note = fmt.Sprintf(" [+%d tuần này]", r.StarsPeriod)
+		case r.Archived:
 			note = " [archived]"
-		} else if !r.Pushed.IsZero() {
+		case !r.Pushed.IsZero():
 			note = fmt.Sprintf(" [push %d]", r.Pushed.Year())
 		}
 		fmt.Printf("%2d. %5d★  %s%s\n", i+1, r.Stars, r.FullName, note)
 		if d := r.Description; d != "" {
-			// Cắt mô tả: README marketing dài cả đoạn, để nguyên thì bảng
-			// không lướt được bằng mắt nữa.
 			if len([]rune(d)) > descMax {
 				d = string([]rune(d)[:descMax-1]) + "…"
 			}

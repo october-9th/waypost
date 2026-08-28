@@ -36,7 +36,6 @@ func TestMergeGopChungNguon(t *testing.T) {
 		{URL: "https://ardanlabs.com/a", Title: "Chỉ HN", Score: 300, Source: SourceHN},
 	}
 	lob := []Result{
-		// Cùng bài, khác scheme/www/trailing slash → phải gộp vào bản HN.
 		{URL: "http://www.go.dev/blog/scheduler/", Title: "Scheduler (lob)", Score: 45, Source: SourceLobsters},
 		{URL: "https://lobste.rs-only.example/b", Title: "Chỉ Lobsters", Score: 200, Source: SourceLobsters},
 	}
@@ -96,8 +95,6 @@ func TestMergeHoaDiemThiBaiMoiHonLenTruoc(t *testing.T) {
 	}
 }
 
-// SortRelevance phải giữ nguyên thứ tự nguồn trả về. Đây là điểm cả mode này
-// tồn tại: khi mọi kết quả đều ~0 điểm thì sắp theo điểm là sắp theo nhiễu.
 func TestSortRelevanceGiuNguyenThuTuNguon(t *testing.T) {
 	in := []Result{
 		{URL: "https://a.example/1", Score: 4, Source: SourceHN},
@@ -110,7 +107,6 @@ func TestSortRelevanceGiuNguyenThuTuNguon(t *testing.T) {
 			t.Errorf("got[%d].URL = %q, muốn %q", i, got[i].URL, want)
 		}
 	}
-	// Và không được đụng vào slice gốc.
 	if in[0].URL != "https://a.example/1" {
 		t.Error("SortResults sửa slice gốc")
 	}

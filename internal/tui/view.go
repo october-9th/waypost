@@ -10,8 +10,6 @@ import (
 	"albert/internal/search"
 )
 
-// Dùng màu ANSI cơ bản (0-15) thay vì mã hex: chúng lấy theo bảng màu người
-// dùng đã chỉnh cho terminal của mình, nên hợp cả nền sáng lẫn nền tối.
 var (
 	styBrand    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	styDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -23,15 +21,10 @@ var (
 	styTab      = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 )
 
-// gutter là bề rộng cột trái của dòng tiêu đề: marker(1) + " " + điểm(5) +
-// "  ". Dòng phụ thụt vào đúng bằng đó để hai cột thẳng hàng.
 const gutter = 9
 
-// sourceWidth đủ cho nhãn dài nhất, "HN+Lobsters".
 const sourceWidth = 11
 
-// narrowWidth là ngưỡng bỏ cột nguồn bên phải. Hẹp hơn mức này thì 11 ô dành
-// cho cột đó ăn mất quá nhiều tiêu đề, nên nguồn chuyển xuống dòng phụ.
 const narrowWidth = 72
 
 func (m Model) View() string {
@@ -56,8 +49,6 @@ func (m Model) headerView() string {
 	return " " + styBrand.Render("albert") + " " + prompt + m.input.View()
 }
 
-// metaView là dòng cho biết chuyện gì đang xảy ra: đang xem pane nào, sắp xếp
-// kiểu gì, tìm được bao nhiêu, lobste.rs có góp gì không, nguồn nào hỏng.
 func (m Model) metaView() string {
 	switch {
 	case m.loading:
@@ -73,27 +64,29 @@ func (m Model) metaView() string {
 		return " " + styDim.Render("gõ topic rồi Enter")
 	}
 
-	// Nhãn pane luôn hiện cả hai để biết bên kia có gì mà bấm tab.
-	tabs := fmt.Sprintf("bài %d | repo %d", len(m.results), len(m.repos))
-	if m.pane == paneRepos {
-		tabs = fmt.Sprintf("bài %d | ", len(m.results)) + styTab.Render(fmt.Sprintf("▸repo %d", len(m.repos)))
-	} else {
-		tabs = styTab.Render(fmt.Sprintf("▸bài %d", len(m.results))) + fmt.Sprintf(" | repo %d", len(m.repos))
+	counts := [numPanes]int{len(m.results), len(m.rep.Repos), len(m.rep.Trending)}
+	labels := make([]string, 0, numPanes)
+	for p := pane(0); p < numPanes; p++ {
+		lbl := fmt.Sprintf("%s %d", p, counts[p])
+		if p == m.pane {
+			lbl = styTab.Render("▸" + lbl)
+		}
+		labels = append(labels, lbl)
 	}
+	tabs := strings.Join(labels, styDim.Render(" | "))
 
 	var parts []string
 	if n := m.paneLen(); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d/%d", m.cursor[m.pane]+1, n))
 	}
-	if m.pane == paneArticles {
+	switch m.pane {
+	case paneArticles:
 		parts = append(parts, "sắp theo "+m.mode.String())
-		if len(m.tags) == 0 {
-			parts = append(parts, "lobste.rs: không khớp tag")
-		} else {
-			parts = append(parts, "lobste.rs: "+strings.Join(m.tags, ", "))
-		}
-	} else {
-		parts = append(parts, "GitHub, xếp theo relevance")
+		parts = append(parts, tagNote("lobste.rs", m.rep.LobstersTags)+" "+tagNote("dev.to", m.rep.DevToTags))
+	case paneRepos:
+		parts = append(parts, "GitHub search, xếp theo relevance")
+	case paneTrending:
+		parts = append(parts, "GitHub trending tuần này, không theo topic")
 	}
 	if len(m.warns) > 0 {
 		return " " + styErr.Render(truncate("cảnh báo: "+m.warns[0].Error(), m.width-2))
@@ -102,8 +95,13 @@ func (m Model) metaView() string {
 	return " " + truncate(tabs+styDim.Render("  ·  ")+rest, m.width-2)
 }
 
-// listView vẽ đúng visibleItems*linesPerItem dòng, đệm dòng trống cho đủ, để
-// khung chi tiết và footer luôn nằm yên một chỗ khi số kết quả thay đổi.
+func tagNote(source string, tags []string) string {
+	if len(tags) == 0 {
+		return source + ":—"
+	}
+	return source + ":" + strings.Join(tags, ",")
+}
+
 func (m Model) listView() string {
 	n := m.visibleItems()
 	lines := make([]string, 0, n*linesPerItem)
@@ -114,6 +112,8 @@ func (m Model) listView() string {
 		case m.loading:
 		case m.err != nil:
 			msg = "  không lấy được kết quả — sửa topic rồi thử lại"
+		case m.pane == paneTrending:
+			msg = "  không lấy được github.com/trending"
 		case m.pane == paneRepos && m.topic != "":
 			msg = fmt.Sprintf("  không có repo nào cho %q", m.topic)
 		case m.topic != "":
@@ -126,8 +126,8 @@ func (m Model) listView() string {
 	for i := off; i < m.paneLen() && len(lines) < n*linesPerItem; i++ {
 		sel := i == m.cursor[m.pane]
 		var head, meta string
-		if m.pane == paneRepos {
-			head, meta = m.repoRow(m.repos[i], sel)
+		if list := m.paneRepoList(); list != nil {
+			head, meta = m.repoRow(list[i], sel)
 		} else {
 			head, meta = m.articleRow(m.results[i], sel)
 		}
@@ -141,15 +141,16 @@ func (m Model) listView() string {
 	return strings.Join(lines, "\n")
 }
 
-// articleRow vẽ một bài: điểm cộng đồng + tiêu đề + nguồn.
 func (m Model) articleRow(r search.Result, sel bool) (head, meta string) {
 	title := r.Title
 	if r.ShowHN {
-		// Không lọc Show HN — với câu hỏi "có ai build chưa" thì nó chính là
-		// câu trả lời. Chỉ đánh dấu để phân biệt sản phẩm với bài viết.
 		title = "[S] " + title
 	}
-	head = m.rowHead(fmt.Sprintf("%5d", r.Score), title, r.Source.String(), sel)
+	score := fmt.Sprintf("%5d", r.Score)
+	if r.Type == search.TypeAcademic {
+		score = "    —"
+	}
+	head = m.rowHead(score, title, r.Source.String(), sel)
 
 	var parts []string
 	if m.width < narrowWidth {
@@ -165,24 +166,25 @@ func (m Model) articleRow(r search.Result, sel bool) (head, meta string) {
 	return head, strings.Join(parts, " · ")
 }
 
-// repoRow vẽ một repo: sao + tên + trạng thái. Sao ở đây là ngữ cảnh (có ai
-// dùng không), KHÔNG phải thứ hạng — danh sách này xếp theo relevance.
 func (m Model) repoRow(r search.Repo, sel bool) (head, meta string) {
-	// Cột phải nói repo còn sống hay không — đó mới là thứ cần biết khi hỏi
-	// "có ai build chưa". Nhãn "GitHub" thì mọi dòng đều giống nhau, vô dụng.
 	right := "—"
-	if r.Archived {
+	switch {
+	case r.StarsPeriod > 0:
+		right = fmt.Sprintf("+%s tuần", compactStars(r.StarsPeriod))
+	case r.Archived:
 		right = "archived"
-	} else if !r.Pushed.IsZero() {
+	case !r.Pushed.IsZero():
 		right = fmt.Sprintf("push %d", r.Pushed.Year())
 	}
 	head = m.rowHead(fmt.Sprintf("%4s★", compactStars(r.Stars)), r.FullName, right, sel)
 
-	// Số sao đã nằm ở cột trái, đừng in lại lần nữa ở dòng phụ.
-	return head, strings.Join(strings.Fields(r.Description), " ")
+	desc := strings.Join(strings.Fields(r.Description), " ")
+	if r.Language != "" {
+		desc = r.Language + " · " + desc
+	}
+	return head, desc
 }
 
-// rowHead dựng dòng tiêu đề chung cho cả hai pane.
 func (m Model) rowHead(left, title, right string, sel bool) string {
 	marker := " "
 	shown := truncate(title, m.titleWidth())
@@ -192,8 +194,6 @@ func (m Model) rowHead(left, title, right string, sel bool) string {
 	}
 	head := fmt.Sprintf("%s %s  %s", marker, styScore.Render(left), shown)
 	if m.width >= narrowWidth {
-		// Đệm theo bề rộng thật của phần đã vẽ, không theo titleWidth: tiêu đề
-		// ngắn hơn cột thì nhãn bên phải vẫn phải nằm sát mép phải.
 		pad := m.width - lipgloss.Width(head) - sourceWidth - 1
 		if pad < 1 {
 			pad = 1
@@ -203,7 +203,6 @@ func (m Model) rowHead(left, title, right string, sel bool) string {
 	return head
 }
 
-// compactStars rút gọn số sao cho vừa cột 5 ô: 243302 → 243k.
 func compactStars(n int) string {
 	switch {
 	case n >= 1_000_000:
@@ -215,7 +214,6 @@ func compactStars(n int) string {
 	}
 }
 
-// detailView là khung 2 dòng cho mục đang chọn: link đầy đủ và mô tả.
 func (m Model) detailView() string {
 	link, desc := "", ""
 	if r, ok := m.selectedResult(); ok {
@@ -243,9 +241,9 @@ func (m Model) footerView() string {
 	case m.focus == focusInput:
 		help = "enter tìm · esc danh sách · ctrl+c thoát"
 	case m.width < narrowWidth:
-		help = "enter mở · tab bài↔repo · s sort · / topic mới · q thoát"
+		help = "enter mở · tab đổi pane · s sort · / topic mới · q thoát"
 	default:
-		help = "enter mở · c thảo luận · y copy · tab bài↔repo · s đổi sort · / topic mới · i sửa · r tìm lại · q thoát"
+		help = "enter mở · c thảo luận · y copy · tab bài→repo→trending · s đổi sort · / topic mới · i sửa · r tìm lại · q thoát"
 	}
 	return " " + styDim.Render(truncate(help, m.width-2))
 }
@@ -269,8 +267,6 @@ func domainOf(raw string) string {
 	return strings.TrimPrefix(strings.ToLower(u.Host), "www.")
 }
 
-// truncate cắt chuỗi theo bề rộng hiển thị (không phải số byte hay số rune —
-// tiêu đề hay có ký tự CJK rộng gấp đôi).
 func truncate(s string, w int) string {
 	if w <= 0 {
 		return ""

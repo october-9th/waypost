@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// hnHitsPerPage là số hit xin từ Algolia. 30 là đủ: ta chỉ lấy top 10-15 sau
-// khi merge, và topic hẹp thường không có tới 30 bài.
 const hnHitsPerPage = 30
 
 type hnResponse struct {
@@ -16,9 +14,7 @@ type hnResponse struct {
 }
 
 type hnHit struct {
-	Title string `json:"title"`
-	// URL là null với Ask HN / text post. encoding/json để nguyên chuỗi rỗng
-	// khi gặp null, nên lọc theo chuỗi rỗng là đủ, không cần con trỏ.
+	Title       string   `json:"title"`
 	URL         string   `json:"url"`
 	Points      int      `json:"points"`
 	CreatedAtI  int64    `json:"created_at_i"`
@@ -27,9 +23,6 @@ type hnHit struct {
 	Tags        []string `json:"_tags"`
 }
 
-// showHN cho biết hit có phải bài Show HN. Đã verify (2026-08-26): Algolia
-// trả `_tags` gồm "story", "author_<tên>", "story_<id>", và thêm "show_hn"
-// hoặc "ask_hn" khi đúng loại đó.
 func (h hnHit) showHN() bool {
 	for _, t := range h.Tags {
 		if t == "show_hn" {
@@ -39,16 +32,7 @@ func (h hnHit) showHN() bool {
 	return false
 }
 
-// SearchHN tìm story trên Hacker News qua Algolia Search API (free, không key).
-//
-// Bỏ qua hit không có URL ngoài — Ask HN/text post không phải bài để đọc.
-//
-// Cũng bỏ hit mà cả title lẫn URL đều không nhắc tới token nào của topic.
-// Algolia match kiểu OR: với topic niche như "elixir beam scheduler" nó trả về
-// bài lạc đề nhưng điểm cao (đo thật: một bài Rust/Bevy 110 điểm), mà pipeline
-// này sort theo điểm nên bài đó leo thẳng lên top 1. Đây là lọc precision,
-// không phải chấm điểm — vẫn không tự đoán bài nào hay, chỉ vứt bài không
-// liên quan trước khi để điểm cộng đồng xếp hạng.
+// SearchHN tìm bài Hacker News qua Algolia.
 func (c *Client) SearchHN(ctx context.Context, topic string) ([]Result, error) {
 	topic = NormalizeTopic(topic)
 	if topic == "" {
@@ -79,6 +63,7 @@ func (c *Client) SearchHN(ctx context.Context, topic string) ([]Result, error) {
 			URL:         h.URL,
 			Score:       h.Points,
 			Source:      SourceHN,
+			Type:        TypeVoted,
 			NumComments: h.NumComments,
 			ShowHN:      h.showHN(),
 		}

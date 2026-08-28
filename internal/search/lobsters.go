@@ -10,21 +10,14 @@ import (
 	"time"
 )
 
-// lobstersTagPages là số trang lấy cho mỗi lần search. Mỗi trang 25 story theo
-// thứ tự mới nhất, nên 3 trang ≈ 75 bài, trải khoảng 1-2 tháng với tag đông.
-// Đừng tăng bừa: đây là site nhỏ tự host, mỗi trang là một request.
 const lobstersTagPages = 3
 
-// maxTags là số tag tối đa map từ một topic. Lấy nhiều hơn thì tag khớp yếu
-// sẽ kéo vào toàn bài lạc đề.
 const maxTags = 2
 
-// tagsCacheTTL — tập tag của lobste.rs gần như không đổi (116 tag), cache dài
-// tay được. Cache miss cũng chỉ tốn một request, nên không cần TTL ngắn.
 const tagsCacheTTL = 7 * 24 * time.Hour
 
-// tagAliases lấp chỗ mà tên tag lẫn description đều không khớp topic thường
-// gặp. Cố tình để nhỏ: mỗi dòng phải là thứ thật sự hay gõ, không đoán trước.
+const lobstersTagsCache = "lobsters-tags.json"
+
 var tagAliases = map[string]string{
 	"sqlite":     "databases",
 	"postgres":   "databases",
@@ -39,10 +32,15 @@ var tagAliases = map[string]string{
 	"llm":        "ai",
 	"llms":       "ai",
 	"golang":     "go",
+
+	"claude":    "ai",
+	"anthropic": "ai",
+	"gpt":       "ai",
+	"openai":    "ai",
+	"copilot":   "ai",
 }
 
-// Tag là một tag trên lobste.rs. Description hay chứa tên gọi khác của tag
-// ("Golang programming" cho tag `go`) nên cũng dùng để so khớp topic.
+// Tag mô tả một tag của lobste.rs.
 type Tag struct {
 	Tag         string `json:"tag"`
 	Description string `json:"description"`
@@ -60,10 +58,9 @@ type lobstersStory struct {
 	DescriptionPlain string   `json:"description_plain"`
 }
 
-// Tags trả về danh sách tag của lobste.rs, ưu tiên đọc từ cache trên đĩa.
-// Lỗi cache không làm hỏng lời gọi — cùng lắm là gọi lại API.
+// Tags lấy danh sách tag của lobste.rs, ưu tiên cache trên đĩa.
 func (c *Client) Tags(ctx context.Context) ([]Tag, error) {
-	if tags, ok := c.readTagsCache(); ok {
+	if tags, ok := c.readTagsCache(lobstersTagsCache); ok {
 		return tags, nil
 	}
 
@@ -71,19 +68,19 @@ func (c *Client) Tags(ctx context.Context) ([]Tag, error) {
 	if err := c.getJSON(ctx, "https://lobste.rs/tags.json", &tags); err != nil {
 		return nil, fmt.Errorf("lobste.rs tags: %w", err)
 	}
-	c.writeTagsCache(tags)
+	c.writeTagsCache(lobstersTagsCache, tags)
 	return tags, nil
 }
 
-func (c *Client) tagsCachePath() string {
+func (c *Client) tagsCachePath(name string) string {
 	if c.cacheDir == "" {
 		return ""
 	}
-	return filepath.Join(c.cacheDir, "lobsters-tags.json")
+	return filepath.Join(c.cacheDir, name)
 }
 
-func (c *Client) readTagsCache() ([]Tag, bool) {
-	path := c.tagsCachePath()
+func (c *Client) readTagsCache(name string) ([]Tag, bool) {
+	path := c.tagsCachePath(name)
 	if path == "" {
 		return nil, false
 	}
@@ -102,8 +99,8 @@ func (c *Client) readTagsCache() ([]Tag, bool) {
 	return tags, true
 }
 
-func (c *Client) writeTagsCache(tags []Tag) {
-	path := c.tagsCachePath()
+func (c *Client) writeTagsCache(name string, tags []Tag) {
+	path := c.tagsCachePath(name)
 	if path == "" {
 		return
 	}
@@ -114,7 +111,6 @@ func (c *Client) writeTagsCache(tags []Tag) {
 	if err != nil {
 		return
 	}
-	// Ghi tạm rồi rename để lần chạy sau không đọc phải file ghi dở.
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return
@@ -124,18 +120,7 @@ func (c *Client) writeTagsCache(tags []Tag) {
 	}
 }
 
-// matchTags map topic sang tag của lobste.rs.
-//
-// Trả về tag đã chọn và extra: các token của topic không tag nào "nuốt" được.
-// extra chính là phần topic hẹp hơn tag (vd "go scheduler" → tag `go`, extra
-// ["scheduler"]) và sẽ dùng để lọc title. extra rỗng nghĩa là topic trùng
-// khít tag, cả feed đều đúng chủ đề, khỏi lọc.
-//
-// Trả về tag rỗng nghĩa là không map được — khi đó bỏ hẳn lobste.rs thay vì
-// đoán bừa một tag.
-func matchTags(topic string, tags []Tag) (picked []string, extra []string) {
-	// Chọn tag bằng token đã lọc từ chung; tính extra bằng token đầy đủ, để
-	// từ như "design" vẫn dùng được cho bước lọc title dù vô dụng khi chọn tag.
+func matchTags(topic string, tags []Tag, aliases map[string]string) (picked []string, extra []string) {
 	tokens := tagTokens(topic)
 	if len(tokens) == 0 {
 		return nil, nil
@@ -158,10 +143,9 @@ func matchTags(topic string, tags []Tag) (picked []string, extra []string) {
 		for _, tok := range tokens {
 			switch {
 			case stem(tok) == stem(t.Tag):
-				// Khớp thẳng tên tag là tín hiệu mạnh nhất.
 				points += 2 * len(tok)
 				consumed = append(consumed, tok)
-			case tagAliases[tok] == t.Tag:
+			case aliases[tok] == t.Tag:
 				points += 2 * len(tok)
 				consumed = append(consumed, tok)
 			case matchesAny(t.Description, []string{tok}) && len(descTokens) > 0:
@@ -178,7 +162,6 @@ func matchTags(topic string, tags []Tag) (picked []string, extra []string) {
 		return nil, nil
 	}
 
-	// Điểm cao trước; hòa thì theo tên tag để cùng topic luôn ra cùng tag.
 	for i := 1; i < len(matches); i++ {
 		for j := i; j > 0; j-- {
 			if matches[j].points > matches[j-1].points ||
@@ -208,9 +191,7 @@ func matchTags(topic string, tags []Tag) (picked []string, extra []string) {
 	return picked, extra
 }
 
-// SearchLobsters tìm bài trên lobste.rs qua tag map. Trả về nil (không lỗi)
-// khi topic không khớp tag nào — đó là kết quả hợp lệ, không phải hỏng hóc;
-// caller chạy tiếp với mỗi HN.
+// SearchLobsters tìm bài qua tag được suy ra từ topic.
 func (c *Client) SearchLobsters(ctx context.Context, topic string) ([]Result, []string, error) {
 	topic = NormalizeTopic(topic)
 	if topic == "" {
@@ -222,7 +203,7 @@ func (c *Client) SearchLobsters(ctx context.Context, topic string) ([]Result, []
 		return nil, nil, err
 	}
 
-	picked, extra := matchTags(topic, tags)
+	picked, extra := matchTags(topic, tags, tagAliases)
 	if len(picked) == 0 {
 		return nil, nil, nil
 	}
@@ -237,8 +218,6 @@ func (c *Client) SearchLobsters(ctx context.Context, topic string) ([]Result, []
 		if s.URL == "" || s.Title == "" {
 			continue
 		}
-		// Topic hẹp hơn tag → bài phải nhắc tới phần hẹp đó ở title hoặc tag
-		// riêng của nó. matchesAny trả true khi extra rỗng, tức không lọc.
 		if !matchesAny(s.Title+" "+strings.Join(s.Tags, " "), extra) {
 			continue
 		}
@@ -247,6 +226,7 @@ func (c *Client) SearchLobsters(ctx context.Context, topic string) ([]Result, []
 			URL:         s.URL,
 			Score:       s.Score,
 			Source:      SourceLobsters,
+			Type:        TypeVoted,
 			CommentsURL: s.CommentsURL,
 			NumComments: s.CommentCount,
 			Description: strings.TrimSpace(s.DescriptionPlain),
@@ -259,17 +239,11 @@ func (c *Client) SearchLobsters(ctx context.Context, topic string) ([]Result, []
 	return out, picked, nil
 }
 
-// fetchTagPages lấy nhiều trang của một (hoặc vài) tag. Endpoint nhiều tag
-// `/t/a,b.json` là hợp của hai tag nên chỉ tốn một request mỗi trang.
-//
-// Gọi tuần tự và nghỉ giữa các trang: lobste.rs tự host, đừng bắn song song.
 func (c *Client) fetchTagPages(ctx context.Context, tags []string, pages int) ([]lobstersStory, error) {
 	joined := strings.Join(tags, ",")
 	var all []lobstersStory
 
 	for page := 1; page <= pages; page++ {
-		// Trang 1 dùng `/t/{tag}.json`; từ trang 2 là `/t/{tag}/page/{n}.json`.
-		// Dạng `?page=n` KHÔNG hoạt động — server bỏ qua và trả lại trang 1.
 		endpoint := fmt.Sprintf("https://lobste.rs/t/%s.json", joined)
 		if page > 1 {
 			endpoint = fmt.Sprintf("https://lobste.rs/t/%s/page/%d.json", joined, page)
@@ -278,7 +252,6 @@ func (c *Client) fetchTagPages(ctx context.Context, tags []string, pages int) ([
 		var stories []lobstersStory
 		if err := c.getJSON(ctx, endpoint, &stories); err != nil {
 			if len(all) > 0 {
-				// Đã có dữ liệu trang trước thì dùng tạm, không vứt hết.
 				return all, nil
 			}
 			return nil, fmt.Errorf("lobste.rs tag %q: %w", joined, err)

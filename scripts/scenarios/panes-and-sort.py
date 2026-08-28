@@ -1,4 +1,4 @@
-# Topic mới nổi: kiểm tra pane repo, phím tab, và phím s đổi sort.
+# Kiểm tra pane repository, chuyển pane và đổi cách sắp xếp.
 typ("claude code memory", 0.03)
 os.write(fd, b"\r")
 pump(9.0)

@@ -8,12 +8,53 @@ import (
 	"time"
 )
 
-// ghPerPage — 15 là đủ cho câu hỏi "có ai build chưa"; xa hơn nữa thì độ liên
-// quan tụt nhanh và bạn cũng không đọc hết.
+// agentProducts là tên sản phẩm coding agent.
+//
+// Repo trong lĩnh vực này gần như luôn tự mô tả bằng CƠ CHẾ, không bằng tên
+// sản phẩm — `thedotmack/claude-mem` (92k sao) mô tả mình là "Persistent
+// Context Across Sessions for Every Agent", trong đó không có chữ "memory".
+// Hệ quả đo được (2026-08-28): query `claude code memory` KHÔNG trả về
+// claude-mem, mem0 hay cognee trong **100 kết quả đầu**; đổi sang query theo
+// cơ chế `agent memory` thì mem0 ra hạng 2, cognee hạng 19.
+//
+// Đây chính là quy tắc "search bằng cơ chế, đừng search bằng tên term" đã ghi
+// trong plan — trước đây bắt người dùng tự nhớ và tự gõ, giờ để code tự làm.
+var agentProducts = map[string]bool{
+	"claude": true, "anthropic": true, "codex": true, "openai": true,
+	"chatgpt": true, "gpt": true, "cursor": true, "copilot": true,
+	"gemini": true, "windsurf": true, "opencode": true, "aider": true,
+}
+
+// mechanismQuery đổi query chứa tên sản phẩm thành query theo cơ chế.
+// "claude code memory" → "agent memory". Trả rỗng khi topic không chứa tên
+// sản phẩm nào — khi đó không bắn thêm request, giữ nguyên 1 request/lần tìm
+// (search API của GitHub chỉ cho 10 request/phút khi không có token).
+func mechanismQuery(topic string) string {
+	var kept []string
+	var sawProduct bool
+	for _, tok := range tokenize(topic) {
+		switch {
+		case agentProducts[tok]:
+			sawProduct = true
+		case tok == "code" || tok == "coding":
+			// "code" đi kèm tên sản phẩm ("claude code") là một phần của tên,
+			// không phải cơ chế. Bỏ luôn, nếu không "code memory" vẫn trượt.
+			sawProduct = true
+		default:
+			kept = append(kept, tok)
+		}
+	}
+	if !sawProduct || len(kept) == 0 {
+		return ""
+	}
+	// "agent" thay chỗ tên sản phẩm vừa bỏ: đó là từ mà chính các repo này
+	// dùng để tự mô tả.
+	return "agent " + strings.Join(kept, " ")
+}
+
 const ghPerPage = 15
 
-// Repo là một repo trên GitHub, dùng để trả lời câu hỏi "đã có ai build thứ
-// này chưa" — khác hẳn câu hỏi "bài nào đáng đọc" mà HN/lobste.rs trả lời.
+// Repo chứa metadata của một GitHub repository.
 type Repo struct {
 	FullName    string    `json:"full_name"`
 	URL         string    `json:"url"`
@@ -21,6 +62,11 @@ type Repo struct {
 	Stars       int       `json:"stars"`
 	Pushed      time.Time `json:"pushed"`
 	Archived    bool      `json:"archived"`
+
+	StarsPeriod int    `json:"stars_period,omitempty"`
+	Period      string `json:"period,omitempty"`
+
+	Language string `json:"language,omitempty"`
 }
 
 type ghResponse struct {
@@ -37,22 +83,7 @@ type ghItem struct {
 	Fork        bool   `json:"fork"`
 }
 
-// SearchGitHub tìm repo theo topic.
-//
-// KHÔNG sort theo stars, dù stars cũng là điểm cộng đồng. Đã đo (2026-08-26):
-// `sort=stars` với topic "claude code memory" trả về top 3 là repo 243k/80k/69k
-// sao chẳng liên quan gì — cùng một kiểu hỏng như `order=score` của lobste.rs.
-// Lý do: stars đo độ nổi tiếng của cả repo, không đo mức liên quan tới query,
-// nên topic hẹp mà sort theo stars thì repo to nuốt hết.
-//
-// Dùng best-match (relevance mặc định của GitHub) và để stars làm ngữ cảnh —
-// repo còn sống không, có ai dùng không. Vì vậy Repo nằm ở danh sách RIÊNG,
-// không trộn vào bảng xếp hạng của HN/lobste.rs: thang điểm không so được, và
-// nó trả lời câu hỏi khác.
-//
-// Cũng KHÔNG lọc theo token của topic. Đã đo: lọc "khớp ≥2 token" giết
-// `rohitg00/agentmemory` (27k sao, "Persistent memory for AI coding agents") —
-// prior art thật, trượt chỉ vì tên repo dính liền một token.
+// SearchGitHub tìm repository theo topic bằng GitHub best-match.
 func (c *Client) SearchGitHub(ctx context.Context, topic string) ([]Repo, error) {
 	topic = NormalizeTopic(topic)
 	if topic == "" {
@@ -66,9 +97,6 @@ func (c *Client) SearchGitHub(ctx context.Context, topic string) ([]Repo, error)
 
 	var resp ghResponse
 	if err := c.getJSON(ctx, endpoint, &resp); err != nil {
-		// Search API của GitHub cho 10 request/phút khi không kèm token. Gõ
-		// nhanh vài topic liên tiếp là chạm ngay, nên nói rõ nguyên nhân thay
-		// vì để lại một dòng HTTP 403 khó hiểu.
 		if strings.Contains(err.Error(), "HTTP 403") || strings.Contains(err.Error(), "HTTP 429") {
 			return nil, fmt.Errorf("github: chạm rate limit (10 request/phút khi không có token), thử lại sau một phút")
 		}
@@ -85,9 +113,7 @@ func (c *Client) SearchGitHub(ctx context.Context, topic string) ([]Repo, error)
 			URL:         it.HTMLURL,
 			Description: strings.TrimSpace(it.Description),
 			Stars:       it.Stars,
-			// Repo archived vẫn giữ: "có ai build chưa" thì một repo đã bỏ
-			// hoang vẫn là câu trả lời có. Đánh dấu để bạn tự quyết.
-			Archived: it.Archived,
+			Archived:    it.Archived,
 		}
 		if t, err := time.Parse(time.RFC3339, it.PushedAt); err == nil {
 			r.Pushed = t.UTC()
